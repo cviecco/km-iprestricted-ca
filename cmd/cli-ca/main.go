@@ -51,7 +51,9 @@ func (l *ShowCertCommand) Run(ctx *Context) error {
 }
 
 type SignCertCommand struct {
-	csrFilename string `arg:"" name:"csr" help:"Certificate Signing request file." type:"string"`
+	//Duration    time.Duration `name:"duration"`
+	Username    string `name:"username" required:"" help:"What the CN field would actually be" `
+	CsrFilename string `arg:"" name:"csr" help:"Certificate Signing request file." type:"string"`
 }
 
 func (scc *SignCertCommand) Run(ctx *Context) error {
@@ -61,7 +63,7 @@ func (scc *SignCertCommand) Run(ctx *Context) error {
 	       ipv4Netblocks []net.IPNet, duration time.Duration,
 	       crlURL []string, OCPServer []string) ([]byte, error) {
 	*/
-	_, netBlock, err := net.ParseCIDR("defaultNetBlock")
+	_, netBlock, err := net.ParseCIDR(defaultNetBlock)
 	if err != nil {
 		return err
 	}
@@ -75,15 +77,19 @@ func (scc *SignCertCommand) Run(ctx *Context) error {
 	}
 	certDuration := time.Hour * 24
 
-	csrBytes, err := os.ReadFile(scc.csrFilename)
+	csrPemBytes, err := os.ReadFile(scc.CsrFilename)
 	if err != nil {
 		return err
 	}
-	csr, err := x509.ParseCertificateRequest(csrBytes)
+	csrPemBlock, _ := pem.Decode(csrPemBytes)
+	if csrPemBlock == nil || csrPemBlock.Type != "CERTIFICATE REQUEST" {
+		log.Fatal("failed to decode PEM block containing public key")
+	}
+	csr, err := x509.ParseCertificateRequest(csrPemBlock.Bytes)
 	if err != nil {
 		return err
 	}
-	certBytes, err := certgen.GenIPRestrictedX509Cert("someusername", csr.PublicKey,
+	certBytes, err := certgen.GenIPRestrictedX509Cert(scc.Username, csr.PublicKey,
 		cacert, ctx.signer, []net.IPNet{*netBlock}, certDuration, nil, nil)
 	pemBlock := &pem.Block{
 		Type:  "CERTIFICATE",
