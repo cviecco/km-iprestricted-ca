@@ -4,7 +4,7 @@ import (
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
-	//"fmt"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/Cloud-Foundations/keymaster/lib/certgen"
 	"github.com/alecthomas/kong"
+	"go.step.sm/crypto/kms/awskms"
 )
 
 const demoCN = "ip-restricted-demo-cn"
@@ -95,7 +96,16 @@ func (scc *SignCertCommand) Run(ctx *Context) error {
 		Type:  "CERTIFICATE",
 		Bytes: certBytes,
 	}
-	return pem.Encode(ctx.stdout, pemBlock)
+	err = pem.Encode(ctx.stdout, pemBlock)
+	if err != nil {
+		return err
+	}
+
+	caBlock := &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: caBytes,
+	}
+	return pem.Encode(ctx.stdout, caBlock)
 
 }
 
@@ -107,7 +117,11 @@ var cli struct {
 	SignCert SignCertCommand `cmd:"" help:"Sing certificate."`
 }
 
-///implementation
+// /implementation
+func initAWSKmsSigner(keyname string) (*awskms.KMS, error) {
+
+	return nil, fmt.Errorf("not imlemented")
+}
 
 func generateCAFromCliContext(ctx *Context) ([]byte, error) {
 	return certgen.GenSelfSignedCACert(ctx.CaCN, "test-org", ctx.signer)
