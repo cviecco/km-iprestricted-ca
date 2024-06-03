@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +20,7 @@ import (
 const demoCN = "ip-restricted-demo-cn"
 const keyFilename = "key.pem"
 const defaultNetBlock = "10.0.0.0/8"
+const caCertFolename = "cacert.pem"
 
 // ssh-keygen -t ecdsa -f key.pem
 // openssl genrsa -out private-key.pem 3072
@@ -30,6 +32,7 @@ type Context struct {
 
 	CaCN   string
 	stdout io.Writer
+	caCert *x509.Certificate
 	signer crypto.Signer
 }
 
@@ -39,14 +42,14 @@ type ShowCertCommand struct {
 }
 
 func (l *ShowCertCommand) Run(ctx *Context) error {
-	caBytes, err := generateCAFromCliContext(ctx)
+	//caBytes, err := generateCAFromCliContext(ctx)
 	//caBytes, err := certgen.GenSelfSignedCACert(ctx.CaCN, "test-org", ctx.signer)
-	if err != nil {
-		return err
-	}
+	//if err != nil {
+	//	return err
+	//}
 	block := &pem.Block{
 		Type:  "CERTIFICATE",
-		Bytes: caBytes,
+		Bytes: ctx.caCert.Raw,
 	}
 	return pem.Encode(ctx.stdout, block)
 }
@@ -68,15 +71,17 @@ func (scc *SignCertCommand) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	caBytes, err := generateCAFromCliContext(ctx)
-	if err != nil {
-		return err
-	}
-	cacert, err := x509.ParseCertificate(caBytes)
-	if err != nil {
-		return err
-	}
-	certDuration := time.Hour * 24
+	/*
+		caBytes, err := generateCAFromCliContext(ctx)
+		if err != nil {
+			return err
+		}
+		cacert, err := x509.ParseCertificate(caBytes)
+		if err != nil {
+			return err
+		}
+	*/
+	certDuration := time.Hour * 24 * 30
 
 	csrPemBytes, err := os.ReadFile(scc.CsrFilename)
 	if err != nil {
@@ -91,7 +96,7 @@ func (scc *SignCertCommand) Run(ctx *Context) error {
 		return err
 	}
 	certBytes, err := certgen.GenIPRestrictedX509Cert(scc.Username, csr.PublicKey,
-		cacert, ctx.signer, []net.IPNet{*netBlock}, certDuration, nil, nil)
+		ctx.caCert, ctx.signer, []net.IPNet{*netBlock}, certDuration, nil, nil)
 	pemBlock := &pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: certBytes,
@@ -103,7 +108,7 @@ func (scc *SignCertCommand) Run(ctx *Context) error {
 
 	caBlock := &pem.Block{
 		Type:  "CERTIFICATE",
-		Bytes: caBytes,
+		Bytes: ctx.caCert.Raw,
 	}
 	return pem.Encode(ctx.stdout, caBlock)
 
@@ -127,8 +132,40 @@ func generateCAFromCliContext(ctx *Context) ([]byte, error) {
 	return certgen.GenSelfSignedCACert(ctx.CaCN, "test-org", ctx.signer)
 }
 
+func LoadCertOrGenerate(filename string, ctx *Context) (*x509.Certificate, error) {
+	certPemBytes, err := os.ReadFile(filename)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		//file does not exist, lets generate it
+		caBytes, err := generateCAFromCliContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// Write the new cert!
+		//err := os.WriteFile("/tmp/dat1", d1, 0644)
+
+		caCert, err := x509.ParseCertificate(caBytes)
+		if err != nil {
+			return nil, err
+		}
+		return caCert, nil
+
+	}
+	// PEM decode
+	certPemBlock, _ := pem.Decode(certPemBytes)
+	if certPemBlock == nil || certPemBlock.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("failed to decode PEM block containing public key")
+	}
+	return x509.ParseCertificate(certPemBlock.Bytes)
+
+}
+
 func main() {
 	ctx := kong.Parse(&cli)
+
+	// Load Certificate OR generate new one
 
 	// Load signer + initialize whatwever
 	privateKeyBytes, err := os.ReadFile(keyFilename)
@@ -140,7 +177,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("cannot inicialize signer err=%s", err)
 	}
+	// Now
+	ctx2 := Context{Debug: cli.Debug, signer: signer, stdout: os.Stdout}
+	caCert, err := LoadCertOrGenerate(caCertFolename, &ctx2)
+	if err != nil {
+		log.Fatalf("could not load certificate err=%s", err)
+	}
+	ctx2.caCert = caCert
+	// TODO ensure cert and signer match
 
-	err = ctx.Run(&Context{Debug: cli.Debug, signer: signer, stdout: os.Stdout})
+	err = ctx.Run(&ctx2)
 	ctx.FatalIfErrorf(err)
 }
