@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -269,6 +270,7 @@ func getSigningAlgorithm(key crypto.PublicKey, opts crypto.SignerOpts) (types.Si
 			log.Printf("getSigningAlgorithm hash opts selecting sha256")
 			return types.SigningAlgorithmSpecEcdsaSha256, nil
 		case crypto.SHA384:
+			log.Printf("getSigningAlgorithm hash opts selecting sha384")
 			return types.SigningAlgorithmSpecEcdsaSha384, nil
 		case crypto.SHA512:
 			return types.SigningAlgorithmSpecEcdsaSha512, nil
@@ -320,6 +322,32 @@ func initAWSKmsSigner(ctx context.Context, keyname string) (crypto.Signer, error
 	return signer, nil
 }
 
+func getSignerHashFromPublic(pub interface{}) (crypto.Hash, error) {
+	// crypto.SHA256
+	switch pub := pub.(type) {
+	case *rsa.PublicKey:
+		return crypto.SHA256, nil
+	case *ecdsa.PublicKey:
+		switch pub.Curve {
+		case elliptic.P224(), elliptic.P256():
+			return crypto.SHA256, nil
+		case elliptic.P384():
+			return crypto.SHA384, nil
+		case elliptic.P521():
+			return crypto.SHA512, nil
+		default:
+			return 0, fmt.Errorf("x509: unknown elliptic curve")
+		}
+	//Ed25519 signatures (by default) dont have a prefered signer
+	case *ed25519.PublicKey, ed25519.PublicKey:
+		return 0, nil
+
+	default:
+		return 0, fmt.Errorf("unknown key type")
+	}
+
+}
+
 func GenSelfSignedCACert(commonName string, organization string, caPriv crypto.Signer) ([]byte, error) {
 
 	log.Printf("top of GenSelfSignedCACer")
@@ -332,11 +360,21 @@ func GenSelfSignedCACert(commonName string, organization string, caPriv crypto.S
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256([]byte(commonName))
-	signedCN, err := caPriv.Sign(rand.Reader, sum[:], crypto.SHA256)
+	//sum := sha256.Sum256([]byte(commonName))
+
+	hashfunc, err := getSignerHashFromPublic(caPriv.Public())
 	if err != nil {
 		return nil, err
 	}
+	hasher := hashfunc.New()
+	hasher.Write([]byte(commonName))
+	sum := hasher.Sum(nil)
+
+	signedCN, err := caPriv.Sign(rand.Reader, sum, hashfunc)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("signedCN complete")
 	sigSum := sha256.Sum256(signedCN)
 	sig := base64.StdEncoding.EncodeToString(sigSum[:])
 	template := x509.Certificate{
