@@ -20,6 +20,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Cloud-Foundations/keymaster/lib/certgen"
@@ -162,7 +163,21 @@ func getSignerHashFromPublic(pub interface{}) (crypto.Hash, error) {
 	default:
 		return 0, fmt.Errorf("unknown key type")
 	}
+}
 
+func isSignatureStable(pub interface{}) ([]byte, bool, error) {
+	switch pub := pub.(type) {
+	case *rsa.PublicKey, *ed25519.PublicKey, ed25519.PublicKey:
+		return nil, true, nil
+	case *ecdsa.PublicKey:
+		ecdh, err := pub.ECDH()
+		if err != nil {
+			return nil, false, err
+		}
+		return ecdh.Bytes(), false, nil
+	default:
+		return nil, false, fmt.Errorf("unknown key type")
+	}
 }
 
 func GenSelfSignedCACert(commonName string, organization string, caPriv crypto.Signer) ([]byte, error) {
@@ -177,23 +192,42 @@ func GenSelfSignedCACert(commonName string, organization string, caPriv crypto.S
 	if err != nil {
 		return nil, err
 	}
-	//sum := sha256.Sum256([]byte(commonName))
 
-	hashfunc, err := getSignerHashFromPublic(caPriv.Public())
+	// On the initial version of keymaster we used the base64 encoding
+	// of the sha256sum of the rsa signature of the sha256 of the
+	// common name. This to have a stable, key dependent
+	// serial number.
+	// Howeve this was a bad idea as:
+	// 1. Not all signers can use sha256
+	// 2. Not all signatures are stable.
+	//
+	// However for compatility reasons me must keep the rsa behaviour
+	// Thus the pkix common name generation is extermelly messy
+	keyStableBytes, stableSig, err := isSignatureStable(caPriv.Public())
 	if err != nil {
 		return nil, err
 	}
-	hasher := hashfunc.New()
-	hasher.Write([]byte(commonName))
-	sum := hasher.Sum(nil)
-
-	signedCN, err := caPriv.Sign(rand.Reader, sum, hashfunc)
-	if err != nil {
-		return nil, err
+	if stableSig {
+		message := ([]byte(commonName))
+		hashfunc, err := getSignerHashFromPublic(caPriv.Public())
+		if err != nil {
+			return nil, err
+		}
+		if hashfunc != 0 {
+			//message needs to be pre-hashed
+			hasher := hashfunc.New()
+			hasher.Write([]byte(message))
+			message = hasher.Sum(nil)
+		}
+		keyStableBytes, err = caPriv.Sign(rand.Reader, message, hashfunc)
+		if err != nil {
+			return nil, err
+		}
 	}
 	log.Printf("signedCN complete")
-	sigSum := sha256.Sum256(signedCN)
+	sigSum := sha256.Sum256(keyStableBytes)
 	sig := base64.StdEncoding.EncodeToString(sigSum[:])
+	log.Printf("sig=%s", sig)
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
@@ -247,39 +281,37 @@ func LoadCertOrGenerate(filename string, ctx *Context) (*x509.Certificate, error
 
 }
 
+func initSigner(ctx context.Context, location string) (crypto.Signer, error) {
+	if strings.HasPrefix(location, "arn:") {
+		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion("us-west-2"))
+		if err != nil {
+			return nil, err
+		}
+		return kmssigner.NewKmsSigner(cfg, ctx, location)
+	}
+	// asume then local file.. TODO: fallback to try aws if file does not exist
+	privateKeyBytes, err := os.ReadFile(location)
+	if err != nil {
+		return nil, err
+	}
+	return certgen.GetSignerFromPEMBytes(privateKeyBytes)
+}
+
 func main() {
 	ctx := kong.Parse(&cli)
 
 	// Load Certificate OR generate new one
 
 	// Load signer + initialize whatwever
-	privateKeyBytes, err := os.ReadFile(keyFilename)
-	if err != nil {
-		log.Fatalf("failure readking key file")
-	}
-
-	signer, err := certgen.GetSignerFromPEMBytes(privateKeyBytes)
-	if err != nil {
-		log.Fatalf("cannot inicialize signer err=%s", err)
-	}
+	signerLocation := keyFilename
 	if cli.KeyArn != "" {
-		ctx := context.Background()
-		/*
-			signer, err = initAWSKmsSigner(ctx, cli.KeyArn)
-			if err != nil {
-				log.Fatalf("error initializing aws secret", err)
-			}
-		*/
-		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion("us-west-2"))
-		if err != nil {
-			log.Fatal(err)
-		}
+		signerLocation = cli.KeyArn
+	}
+	gctx := context.Background()
 
-		ks, err := kmssigner.NewKmsSigner(cfg, ctx, cli.KeyArn)
-		if err != nil {
-			log.Fatal(err)
-		}
-		signer = ks
+	signer, err := initSigner(gctx, signerLocation)
+	if err != nil {
+		log.Fatalf("Error loading signer err=%s", err)
 	}
 
 	// Now
