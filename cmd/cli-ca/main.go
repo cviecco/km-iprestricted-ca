@@ -13,20 +13,21 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Cloud-Foundations/keymaster/lib/certgen"
 	"github.com/alecthomas/kong"
 	//"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
+	aws_config "github.com/aws/aws-sdk-go-v2/config"
 
+	cliconfig "github.com/cviecco/km-iprestricted-ca/lib/config"
 	"github.com/cviecco/km-iprestricted-ca/lib/kmssigner"
 )
 
@@ -45,8 +46,32 @@ type Context struct {
 
 	CaCN   string
 	stdout io.Writer
-	caCert *x509.Certificate
 	signer crypto.Signer
+	config cliconfig.CliCaConfig
+}
+
+type GenerateCACertCommand struct {
+	CaCN string `name: "ca_cn" help:"Common name for the CA if needed to generate"`
+}
+
+func (gca *GenerateCACertCommand) Run(ctx *Context) error {
+	caBytes, err := generateCAFromCliContext(ctx)
+	if err != nil {
+		return err
+	}
+	// Write the new cert!
+	//err := os.WriteFile("/tmp/dat1", d1, 0644)
+
+	caCert, err := x509.ParseCertificate(caBytes)
+	if err != nil {
+		return err
+	}
+	block := &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: caCert.Raw,
+	}
+	return pem.Encode(ctx.stdout, block)
+
 }
 
 // ListCommand represents the `list` command, which is used to list information for multiple users.
@@ -61,9 +86,14 @@ func (l *ShowCertCommand) Run(ctx *Context) error {
 	//if err != nil {
 	//	return err
 	//}
+	caCert, err := LocaCertFromFile(ctx.config.Signer.CertLocation)
+	if err != nil {
+		return err
+	}
+
 	block := &pem.Block{
 		Type:  "CERTIFICATE",
-		Bytes: ctx.caCert.Raw,
+		Bytes: caCert.Raw,
 	}
 	return pem.Encode(ctx.stdout, block)
 }
@@ -85,6 +115,12 @@ func (scc *SignCertCommand) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
+
+	caCert, err := LocaCertFromFile(ctx.config.Signer.CertLocation)
+	if err != nil {
+		return err
+	}
+
 	/*
 		caBytes, err := generateCAFromCliContext(ctx)
 		if err != nil {
@@ -110,7 +146,7 @@ func (scc *SignCertCommand) Run(ctx *Context) error {
 		return err
 	}
 	certBytes, err := certgen.GenIPRestrictedX509Cert(scc.Username, csr.PublicKey,
-		ctx.caCert, ctx.signer, []net.IPNet{*netBlock}, certDuration, nil, nil)
+		caCert, ctx.signer, []net.IPNet{*netBlock}, certDuration, nil, nil)
 	pemBlock := &pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: certBytes,
@@ -122,19 +158,20 @@ func (scc *SignCertCommand) Run(ctx *Context) error {
 
 	caBlock := &pem.Block{
 		Type:  "CERTIFICATE",
-		Bytes: ctx.caCert.Raw,
+		Bytes: caCert.Raw,
 	}
 	return pem.Encode(ctx.stdout, caBlock)
 
 }
 
 var cli struct {
-	Debug      bool   `help:"Enable debug mode."`
-	NoFallback bool   `help:"Do not fallback to legacy auth_helper.py."`
-	KeyArn     string `help:"Key urn to use for signing operations"`
+	Debug          bool   `help:"Enable debug mode."`
+	NoFallback     bool   `help:"Do not fallback to legacy auth_helper.py."`
+	ConfigFilename string `help:"configuration filename" default:"config.yml"`
 
-	ShowCert ShowCertCommand `cmd:"" help:"Get specific user group."`
-	SignCert SignCertCommand `cmd:"" help:"Sing certificate."`
+	GenerateCert GenerateCACertCommand `cmd:"" help:"Generate a cacert."`
+	ShowCert     ShowCertCommand       `cmd:"" help:"Get specific user group."`
+	SignCert     SignCertCommand       `cmd:"" help:"Sing certificate."`
 }
 
 /////// To move to a separate lib later
@@ -217,80 +254,54 @@ func generateCAFromCliContext(ctx *Context) ([]byte, error) {
 	return GenSelfSignedCACert(ctx.CaCN, "test-org", ctx.signer)
 }
 
-func LoadCertOrGenerate(filename string, ctx *Context) (*x509.Certificate, error) {
+func LocaCertFromFile(filename string) (*x509.Certificate, error) {
 	certPemBytes, err := os.ReadFile(filename)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		//file does not exist, lets generate it
-		caBytes, err := generateCAFromCliContext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		// Write the new cert!
-		//err := os.WriteFile("/tmp/dat1", d1, 0644)
-
-		caCert, err := x509.ParseCertificate(caBytes)
-		if err != nil {
-			return nil, err
-		}
-		return caCert, nil
-
+		return nil, err
 	}
-	// PEM decode
 	certPemBlock, _ := pem.Decode(certPemBytes)
 	if certPemBlock == nil || certPemBlock.Type != "CERTIFICATE" {
 		return nil, fmt.Errorf("failed to decode PEM block containing public key")
 	}
 	return x509.ParseCertificate(certPemBlock.Bytes)
+}
+
+func loadSignerFromLocation(location string) (crypto.Signer, error) {
+	if strings.HasPrefix(location, "arn:aws:kms:") {
+		ctx := context.Background()
+		cfg, err := aws_config.LoadDefaultConfig(ctx, aws_config.WithRegion("us-west-2"))
+		if err != nil {
+			return nil, err
+		}
+		return kmssigner.NewKmsSigner(cfg, ctx, location)
+	}
+	privateKeyBytes, err := os.ReadFile(location)
+	if err != nil {
+		return nil, err
+	}
+	return certgen.GetSignerFromPEMBytes(privateKeyBytes)
 
 }
 
 func main() {
-	ctx := kong.Parse(&cli)
+	kctx := kong.Parse(&cli)
 
 	// Load Certificate OR generate new one
+	config, err := cliconfig.LoadCliCaConfigFromFile(cli.ConfigFilename)
+	if err != nil {
+		log.Fatalf("faile to load config err=%s", err)
+	}
+	fmt.Printf("config =%+v", config)
 
+	var signer crypto.Signer
+	signer, err = loadSignerFromLocation(config.Signer.KeyLocation)
+	if err != nil {
+		log.Fatal(err)
+	}
 	// Load signer + initialize whatwever
-	privateKeyBytes, err := os.ReadFile(keyFilename)
-	if err != nil {
-		log.Fatalf("failure readking key file")
-	}
-
-	signer, err := certgen.GetSignerFromPEMBytes(privateKeyBytes)
-	if err != nil {
-		log.Fatalf("cannot inicialize signer err=%s", err)
-	}
-	if cli.KeyArn != "" {
-		ctx := context.Background()
-		/*
-			signer, err = initAWSKmsSigner(ctx, cli.KeyArn)
-			if err != nil {
-				log.Fatalf("error initializing aws secret", err)
-			}
-		*/
-		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion("us-west-2"))
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		ks, err := kmssigner.NewKmsSigner(cfg, ctx, cli.KeyArn)
-		if err != nil {
-			log.Fatal(err)
-		}
-		signer = ks
-	}
-
 	// Now
-	ctx2 := Context{Debug: cli.Debug, signer: signer, stdout: os.Stdout}
-	caCert, err := LoadCertOrGenerate(caCertFolename, &ctx2)
-	if err != nil {
-		log.Fatalf("could not load certificate err=%s", err)
-	}
-	ctx2.caCert = caCert
-	// TODO ensure cert and signer match
+	ctx2 := Context{Debug: cli.Debug, signer: signer, config: *config, stdout: os.Stdout}
 
-	err = ctx.Run(&ctx2)
-	ctx.FatalIfErrorf(err)
+	err = kctx.Run(&ctx2)
+	kctx.FatalIfErrorf(err)
 }
