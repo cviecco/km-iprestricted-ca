@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,6 +54,7 @@ func getHashFuncFromPub(pub crypto.PublicKey) (crypto.Hash, error) {
 }
 
 func TestBaseYkPivSigner(t *testing.T) {
+	var toBeSigned = "hello world"
 	hasCard := hasYubiKeyCards()
 	if !hasCard {
 		t.Skip("Skipping testing with no cards present")
@@ -66,6 +68,7 @@ func TestBaseYkPivSigner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer signer.Close()
 	postNewSigner := time.Now()
 	t.Logf("getSigner Duration %v", postNewSigner.Sub(begin))
 	pub := signer.Public()
@@ -78,11 +81,81 @@ func TestBaseYkPivSigner(t *testing.T) {
 		t.Fatal(err)
 	}
 	preSignTime := time.Now()
-	_, err = signer.Sign(rand.Reader, []byte("hello world"), hashFunc)
+	signature, err := signer.Sign(rand.Reader, []byte(toBeSigned), hashFunc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	postSignTime := time.Now()
 	t.Logf("signDuration %v", postSignTime.Sub(preSignTime))
+
+	var verifiedSignature = false
+	digest := []byte(toBeSigned)
+
+	//now verify
+	switch key := pub.(type) {
+	case *ecdsa.PublicKey:
+		verifiedSignature = ecdsa.VerifyASN1(key, digest, signature)
+	default:
+		verifiedSignature = true
+
+	}
+	if !verifiedSignature {
+		t.Fatalf("Cannot verify with public key")
+	}
 	t.Logf("Full test done")
+}
+
+// This test is just to double check that parallel access to the signer is actually serialized
+// as this has to land on the card.
+func TestParallelYkPivSigner(t *testing.T) {
+	hasCard := hasYubiKeyCards()
+	if !hasCard {
+		t.Skip("Skipping testing with no cards present")
+	}
+	YKPin := os.Getenv("YK_PIN")
+	if YKPin == "" {
+		YKPin = piv.DefaultPIN
+	}
+	signer, err := NewYkPivSigner(0, YKPin, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer signer.Close()
+	pub := signer.Public()
+	if pub == nil {
+		t.Fatal("publicKey should not be null")
+	}
+	hashFunc, err := getHashFuncFromPub(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// now the actual test
+			toBeSigned := fmt.Sprintf("tobeSigned %v", i)
+			message := []byte(toBeSigned)
+			signature, err := signer.Sign(rand.Reader, message, hashFunc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var verifiedSignature = false
+
+			switch key := pub.(type) {
+			case *ecdsa.PublicKey:
+				verifiedSignature = ecdsa.VerifyASN1(key, message, signature)
+			default:
+				verifiedSignature = true
+
+			}
+			if !verifiedSignature {
+				t.Fatalf("Cannot verify with public key")
+			}
+		}()
+
+	}
+	wg.Wait()
 }

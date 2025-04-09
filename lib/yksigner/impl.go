@@ -76,5 +76,7 @@ func (ks *YkSigner) public() crypto.PublicKey {
 }
 
 func (ks *YkSigner) sign(reader io.Reader, message []byte, opts crypto.SignerOpts) ([]byte, error) {
+	ks.ykMutex.Lock()
+	defer ks.ykMutex.Unlock()
 	return ks.signer.Sign(reader, message, opts)
 }

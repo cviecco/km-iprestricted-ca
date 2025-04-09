@@ -3,6 +3,7 @@ package yksigner
 import (
 	"crypto"
 	"io"
+	"sync"
 
 	"github.com/cviecco/piv-go/v2/piv"
 )
@@ -13,6 +14,7 @@ type YkSigner struct {
 	pivPIN    string
 	publicKey crypto.PublicKey
 	signer    crypto.Signer
+	ykMutex   sync.Mutex
 }
 
 func NewYkPivSigner(serial uint32, pivPIN string, pub crypto.PublicKey) (*YkSigner, error) {
