@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cviecco/piv-go/v2/piv"
 )
@@ -60,10 +61,13 @@ func TestBaseYkPivSigner(t *testing.T) {
 	if YKPin == "" {
 		YKPin = piv.DefaultPIN
 	}
+	begin := time.Now()
 	signer, err := NewYkPivSigner(0, YKPin, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	postNewSigner := time.Now()
+	t.Logf("getSigner Duration %v", postNewSigner.Sub(begin))
 	pub := signer.Public()
 	if pub == nil {
 		t.Fatal("publicKey should not be null")
@@ -73,8 +77,12 @@ func TestBaseYkPivSigner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	preSignTime := time.Now()
 	_, err = signer.Sign(rand.Reader, []byte("hello world"), hashFunc)
 	if err != nil {
 		t.Fatal(err)
 	}
+	postSignTime := time.Now()
+	t.Logf("signDuration %v", postSignTime.Sub(preSignTime))
+	t.Logf("Full test done")
 }
