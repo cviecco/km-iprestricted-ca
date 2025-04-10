@@ -80,8 +80,9 @@ func TestBaseYkPivSigner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	message := []byte(toBeSigned)
 	preSignTime := time.Now()
-	signature, err := signer.Sign(rand.Reader, []byte(toBeSigned), hashFunc)
+	signature, err := signer.Sign(rand.Reader, message, hashFunc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,13 +90,15 @@ func TestBaseYkPivSigner(t *testing.T) {
 	t.Logf("signDuration %v", postSignTime.Sub(preSignTime))
 
 	var verifiedSignature = false
-	digest := []byte(toBeSigned)
 
 	//now verify
 	switch key := pub.(type) {
 	case *ecdsa.PublicKey:
-		verifiedSignature = ecdsa.VerifyASN1(key, digest, signature)
+		verifiedSignature = ecdsa.VerifyASN1(key, message, signature)
+	case ed25519.PublicKey:
+		verifiedSignature = ed25519.Verify(key, message, signature)
 	default:
+		t.Logf("key not verification not implemented type=%T", key)
 		verifiedSignature = true
 
 	}
@@ -147,6 +150,9 @@ func TestParallelYkPivSigner(t *testing.T) {
 			switch key := pub.(type) {
 			case *ecdsa.PublicKey:
 				verifiedSignature = ecdsa.VerifyASN1(key, message, signature)
+			case ed25519.PublicKey:
+				verifiedSignature = ed25519.Verify(key, message, signature)
+
 			default:
 				verifiedSignature = true
 
