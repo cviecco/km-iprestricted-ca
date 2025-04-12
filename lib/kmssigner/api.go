@@ -9,8 +9,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 )
 
+// This interface is only to abstract the kms.Client so that we can write tests
+type minKmsClient interface {
+	GetPublicKey(ctx context.Context,
+		params *kms.GetPublicKeyInput,
+		optFns ...func(*kms.Options),
+	) (*kms.GetPublicKeyOutput, error)
+	Sign(ctx context.Context, params *kms.SignInput, optFns ...func(*kms.Options)) (*kms.SignOutput, error)
+}
+
 type KmsSigner struct {
-	client    *kms.Client
+	client    minKmsClient //*kms.Client
 	keyID     string
 	publicKey crypto.PublicKey
 }
